@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>MISPRINT — engine feel bench</title>
+<style>
+  body{margin:0;background:#1b1a20;color:#f1e9d6;font:13px/1.5 ui-monospace,monospace;display:grid;grid-template-columns:1fr 320px;height:100vh}
+  iframe{border:0;width:100%;height:100%}
+  aside{padding:12px;overflow:auto;border-left:2px solid #f1e9d6}
+  canvas{width:100%;height:90px;background:#111;display:block;margin:6px 0}
+  pre{white-space:pre-wrap;margin:0}
+  a{color:#ff48b0}
+</style></head>
+<body>
+<!-- Practice range (offline fake server) with a live readout of window.__mp.info(): speed graph for
+     tuning movement. Click the game to lock the mouse; WASD / Space / Ctrl / Shift / Q / 1-4. -->
+<iframe id="game" src="/?offline=1&auto=BENCH"></iframe>
+<aside>
+  <div>speed (m/s) — line at run speed 8.2</div>
+  <canvas id="graph" width="296" height="90"></canvas>
+  <pre id="out">loading…</pre>
+  <p>Variants: <a href="?cards=double_sided,dash_dot_dash,wall_text">movement cards</a> ·
+     <a href="?cards=carbon_copy,big_headline">ricochet + big heads</a> · <a href="?seed=42">seed 42</a></p>
+</aside>
+<script type="module">
+const frame = document.getElementById('game');
+const extra = location.search.slice(1);
+// debug=1 would disable pointer lock; the bench reads state through the same-origin iframe instead
+frame.src = `/?offline=1&auto=BENCH&bench=1${extra ? '&' + extra : ''}`;
+const g = document.getElementById('graph').getContext('2d');
+const out = document.getElementById('out');
+const hist = [];
+setInterval(() => {
+  const mp = frame.contentWindow.__bench;
+  if (!mp) return;
+  const i = mp.info();
+  hist.push(i.speed || 0);
+  if (hist.length > 296) hist.shift();
+  g.clearRect(0, 0, 296, 90);
+  g.strokeStyle = '#555'; g.beginPath(); g.moveTo(0, 90 - 8.2 * 4); g.lineTo(296, 90 - 8.2 * 4); g.stroke();
+  g.strokeStyle = '#ff48b0'; g.beginPath();
+  hist.forEach((v, x) => (x ? g.lineTo(x, 90 - v * 4) : g.moveTo(x, 90 - v * 4)));
+  g.stroke();
+  const pick = ({ speed, pos, vel, onGround, crouched, sliding, wallrun, dashing, dashCharges, airJumps, rewindCooldown, lastApex, lastDash, weapon, ammo, hp, fps }) =>
+    ({ speed, pos, vel, onGround, crouched, sliding, wallrun, dashing, dashCharges, airJumps, rewindCooldown, lastApex, lastDash, weapon, ammo, hp, fps });
+  out.textContent = JSON.stringify(pick(i), null, 1);
+}, 33);
+</script>
+</body></html>

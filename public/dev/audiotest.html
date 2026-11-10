@@ -1,0 +1,479 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>MISPRINT — audio measurement bench</title>
+<style>
+  body { margin: 0; background: #f1e9d6; color: #1b1a20; font: 12px/1.4 ui-monospace, Menlo, monospace; }
+  h1 { font-size: 14px; margin: 8px; }
+  canvas { display: block; margin: 8px; background: #fbf6ea; }
+</style></head>
+<body>
+<h1>MISPRINT audio bench — driven by tools/audiotest.mjs (window.T)</h1>
+<div id="canvases"></div>
+<script type="module">
+// Measurement bench: renders the real audio module through OfflineAudioContexts and reports
+// numbers, because nobody on the build side can listen. tools/audiotest.mjs calls window.T.*,
+// asserts on the results and screenshots the canvases.
+import { createAudio, SOUNDS, LOOPS } from '/js/audio/index.js';
+import { buildGraph } from '/js/audio/context.js';
+import { LOOP_DEFS } from '/js/audio/loops.js';
+import { createDsp } from '/js/audio/dsp.js';
+import { STYLES } from '/js/audio/music/styles.js';
+import { makeRng } from '/shared/rng.js';
+
+const SR = 48000;
+const SEED = Number(new URLSearchParams(location.search).get('seed') || 20261109);
+Math.random = makeRng(SEED); // variation picks and pitch jitter become reproducible
+const db = (x) => (x > 0 ? 20 * Math.log10(x) : -Infinity);
+const round = (x, d = 1) => (Number.isFinite(x) ? Math.round(x * 10 ** d) / 10 ** d : null);
+
+// ------------------------------------------------------------------ rendering
+
+async function render(seconds, setup, options = {}) {
+  const ctx = new OfflineAudioContext(2, Math.ceil(seconds * SR), SR);
+  const A = createAudio({ context: ctx, seed: options.seed ?? SEED });
+  if (options.volume) A.setVolume(options.volume);
+  await setup(A, ctx);
+  const s = A._dev.session, key = `${s.tonic}/${s.mode}/${s.progression.join('')}`;
+  const buf = await ctx.startRendering();
+  return { L: buf.getChannelData(0), R: buf.getChannelData(1), key };
+}
+
+// ------------------------------------------------------------------ analysis
+
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (-2 * Math.PI) / len, wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const a = i + k, b = a + len / 2;
+        const xr = re[b] * cr - im[b] * ci, xi = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+      }
+    }
+  }
+}
+
+/** Magnitude STFT frames (Hann). Returns Float32Array[] of size/2 bins. */
+function stft(x, size, hop, from = 0, to = x.length) {
+  const win = new Float32Array(size).map((_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / size));
+  const frames = [], re = new Float64Array(size), im = new Float64Array(size);
+  for (let p = from; p < Math.max(from + 1, to - size / 4); p += hop) {
+    for (let i = 0; i < size; i++) { re[i] = (x[p + i] || 0) * win[i]; im[i] = 0; }
+    fft(re, im);
+    const mag = new Float32Array(size / 2);
+    for (let i = 0; i < size / 2; i++) mag[i] = Math.hypot(re[i], im[i]) / (size / 4);
+    frames.push(mag);
+  }
+  return frames;
+}
+
+function analyze({ L, R }) {
+  const n = L.length, mono = new Float32Array(n);
+  let peak = 0, clip = 0;
+  for (let i = 0; i < n; i++) {
+    mono[i] = (L[i] + R[i]) / 2;
+    const a = Math.max(Math.abs(L[i]), Math.abs(R[i]));
+    if (a > peak) peak = a;
+    if (a >= 0.999) clip++;
+  }
+  // "audible" region: within 40 dB of the peak
+  const floor = Math.max(peak * 0.01, 1e-5);
+  let start = 0, end = n - 1;
+  while (start < n && Math.max(Math.abs(L[start]), Math.abs(R[start])) < floor) start++;
+  while (end > start && Math.max(Math.abs(L[end]), Math.abs(R[end])) < floor) end--;
+  let sq = 0, dc = 0, monoPeak = 0, attack = 0;
+  for (let i = start; i <= end; i++) {
+    sq += (L[i] * L[i] + R[i] * R[i]) / 2; dc += mono[i];
+    monoPeak = Math.max(monoPeak, Math.abs(mono[i]));
+  }
+  for (let i = start; i < Math.min(n, start + SR * 0.01); i++) attack = Math.max(attack, Math.abs(mono[i]));
+  const len = Math.max(1, end - start + 1), rms = Math.sqrt(sq / len);
+  // magnitude-weighted spectral centroid over the audible region
+  let num = 0, den = 0;
+  for (const frame of stft(mono, 2048, 1024, start, end + 1)) {
+    for (let k = 1; k < frame.length; k++) { num += frame[k] * k * (SR / 2048); den += frame[k]; }
+  }
+  return {
+    dur: round(len / SR, 3), peakDb: round(db(peak)), rmsDb: round(db(rms)), crestDb: round(db(peak / rms)),
+    centroid: Math.round(num / (den || 1)), attackDb: round(db(attack / (monoPeak || 1))),
+    dc: round(dc / len, 5), clip, silent: peak < 1e-3, start, end, mono,
+  };
+}
+
+/** Energy-flux onset envelope (hop ≈ 5.3 ms) + onset count; the basis for "does it groove" numbers. */
+function onsets(mono, from, to) {
+  const hop = 256, size = 1024, frames = stft(mono, size, hop, from, to);
+  const flux = new Float32Array(frames.length);
+  for (let f = 1; f < frames.length; f++) {
+    let s = 0;
+    for (let k = 2; k < size / 2; k++) s += Math.max(0, Math.log1p(200 * frames[f][k]) - Math.log1p(200 * frames[f - 1][k]));
+    flux[f] = s;
+  }
+  let mean = 0;
+  for (const v of flux) mean += v / flux.length;
+  let sd = 0;
+  for (const v of flux) sd += (v - mean) ** 2 / flux.length;
+  const thr = mean + 0.6 * Math.sqrt(sd), minGap = Math.round((0.045 * SR) / hop);
+  let count = 0, last = -minGap;
+  for (let f = 1; f < flux.length - 1; f++) {
+    if (flux[f] > thr && flux[f] >= flux[f - 1] && flux[f] > flux[f + 1] && f - last >= minGap) { count++; last = f; }
+  }
+  return { flux, hop, count, perSec: count / ((to - from) / SR) };
+}
+
+/** Normalised autocorrelation of an envelope at a lag given in seconds (1 = perfectly periodic). */
+function periodicity(env, hop, lagSec) {
+  const lag = Math.round((lagSec * SR) / hop);
+  let mean = 0;
+  for (const v of env) mean += v / env.length;
+  let a = 0, b = 0;
+  for (let i = 0; i + lag < env.length; i++) { a += (env[i] - mean) * (env[i + lag] - mean); b += (env[i] - mean) ** 2; }
+  return a / (b || 1);
+}
+
+/** Share of energy in bands, in percent: sub <120, low <500, mid <2k, hit slot 2.5-6k, air >6k. */
+function bands(mono, from, to) {
+  const e = { sub: 0, low: 0, mid: 0, hitSlot: 0, air: 0 };
+  let total = 0;
+  for (const frame of stft(mono, 4096, 2048, from, to)) {
+    for (let k = 1; k < frame.length; k++) {
+      const f = (k * SR) / 4096, p = frame[k] * frame[k];
+      total += p;
+      if (f < 120) e.sub += p; else if (f < 500) e.low += p; else if (f < 2000) e.mid += p;
+      if (f >= 2500 && f < 6000) e.hitSlot += p;
+      if (f >= 6000) e.air += p;
+    }
+  }
+  for (const k in e) e[k] = round((100 * e[k]) / (total || 1), 1);
+  return e;
+}
+
+const strip = ({ mono, start, end, ...m }) => m;
+
+// ------------------------------------------------------------------ drawing
+
+const INK_RAMP = [[251, 246, 234], [255, 72, 176], [27, 26, 32]]; // paper → riso pink → ink
+const store = new Map(); // label -> { mono, from, to, caption, grid? }
+const keep = (label, m, caption, extra = {}) => store.set(label, { mono: m.mono, from: m.start, to: m.end, caption, ...extra });
+
+function drawTile(g, x, y, w, h, label) {
+  const item = store.get(label);
+  g.save(); g.translate(x, y);
+  g.fillStyle = '#fbf6ea'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#1b1a20'; g.lineWidth = 1; g.strokeRect(0.5, 0.5, w - 1, h - 1);
+  g.fillStyle = '#1b1a20'; g.font = 'bold 12px ui-monospace, monospace';
+  g.fillText(label, 6, 14);
+  if (!item) { g.fillText('(not rendered)', 6, 30); g.restore(); return; }
+  g.font = '10px ui-monospace, monospace'; g.fillStyle = '#5a5560';
+  g.fillText(item.caption, 6, 27);
+  const pad = Math.round(0.03 * SR);
+  const from = Math.max(0, (item.viewFrom ?? item.from) - pad), to = Math.min(item.mono.length, (item.viewTo ?? item.to) + pad), n = to - from;
+  const top = 32, waveH = Math.round((h - top) * 0.4), specTop = top + waveH + 2, specH = h - specTop - 2;
+
+  // waveform: min/max per pixel column, full scale = ±1 (dashed line = -1 dBFS ceiling)
+  let scale = 0;
+  for (let i = from; i < to; i++) scale = Math.max(scale, Math.abs(item.mono[i]));
+  scale = item.fullScale ? 1 : Math.max(scale * 1.1, 1e-4);
+  g.fillStyle = '#2f6bff';
+  for (let px = 0; px < w - 2; px++) {
+    const a = from + Math.floor((px * n) / (w - 2)), b = Math.max(a + 1, from + Math.floor(((px + 1) * n) / (w - 2)));
+    let lo = 1, hi = -1;
+    for (let i = a; i < b; i++) { const v = item.mono[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+    const y0 = top + waveH / 2 - (hi / scale) * (waveH / 2), y1 = top + waveH / 2 - (lo / scale) * (waveH / 2);
+    g.fillRect(1 + px, y0, 1, Math.max(1, y1 - y0));
+  }
+  g.strokeStyle = 'rgba(27,26,32,.35)'; g.beginPath(); g.moveTo(1, top + waveH / 2 + 0.5); g.lineTo(w - 1, top + waveH / 2 + 0.5); g.stroke();
+  if (item.fullScale) {
+    g.setLineDash([4, 3]); g.strokeStyle = '#ff4b33';
+    for (const s of [-1, 1]) { const yy = top + waveH / 2 - s * 0.891 * (waveH / 2); g.beginPath(); g.moveTo(1, yy); g.lineTo(w - 1, yy); g.stroke(); }
+    g.setLineDash([]);
+  }
+
+  // spectrogram: log frequency 40 Hz..20 kHz, ink density = level (-84..-12 dB)
+  const size = n < SR * 0.4 ? 512 : 2048, cols = w - 2, hop = Math.max(1, Math.floor(n / cols));
+  const img = g.createImageData(cols, specH);
+  const win = new Float32Array(size).map((_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / size));
+  const re = new Float64Array(size), im = new Float64Array(size);
+  const binOf = new Float32Array(specH);
+  for (let r = 0; r < specH; r++) binOf[r] = (40 * Math.pow(500, 1 - r / (specH - 1)) * size) / SR;
+  for (let c = 0; c < cols; c++) {
+    const p = from + c * hop - size / 2;
+    for (let i = 0; i < size; i++) { re[i] = (item.mono[p + i] || 0) * win[i]; im[i] = 0; }
+    fft(re, im);
+    for (let r = 0; r < specH; r++) {
+      const k0 = Math.floor(binOf[r]), k1 = Math.max(k0 + 1, Math.ceil(r > 0 ? binOf[r - 1] : binOf[r] + 1));
+      let m = 0;
+      for (let k = Math.max(1, k0); k < Math.min(size / 2, k1 + 1); k++) m = Math.max(m, Math.hypot(re[k], im[k]) / (size / 4));
+      const v = Math.min(1, Math.max(0, (db(m) + 84) / 72)), o = (r * cols + c) * 4;
+      const [c0, c1] = v < 0.5 ? [INK_RAMP[0], INK_RAMP[1]] : [INK_RAMP[1], INK_RAMP[2]], u = v < 0.5 ? v * 2 : v * 2 - 1;
+      for (let j = 0; j < 3; j++) img.data[o + j] = c0[j] + (c1[j] - c0[j]) * u;
+      img.data[o + 3] = 255;
+    }
+  }
+  g.putImageData(img, x + 1, y + specTop);
+  g.fillStyle = 'rgba(27,26,32,.55)'; g.font = '9px ui-monospace, monospace';
+  for (const f of [100, 1000, 10000]) {
+    const yy = specTop + (1 - Math.log(f / 40) / Math.log(500)) * (specH - 1);
+    g.fillRect(1, yy, 6, 1); g.fillText(f >= 1000 ? f / 1000 + 'k' : String(f), 9, yy + 3);
+  }
+  // optional vertical grid (beats / bars) in both panes
+  if (item.grid) {
+    for (const [t, strong] of item.grid) {
+      const px = 1 + ((t * SR - from) / n) * (w - 2);
+      if (px < 1 || px > w - 1) continue;
+      g.fillStyle = strong ? 'rgba(27,26,32,.7)' : 'rgba(27,26,32,.22)';
+      g.fillRect(px, top, 1, h - top - 2);
+    }
+  }
+  g.fillStyle = '#5a5560';
+  g.fillText(`${(n / SR).toFixed(n < SR ? 3 : 2)} s`, w - 52, h - 6);
+  g.restore();
+}
+
+function draw(id, labels, cols, tileW, tileH) {
+  let c = document.getElementById(id);
+  if (!c) { c = document.createElement('canvas'); c.id = id; document.getElementById('canvases').append(c); }
+  const rows = Math.ceil(labels.length / cols);
+  c.width = cols * tileW; c.height = rows * tileH;
+  const g = c.getContext('2d');
+  g.fillStyle = '#f1e9d6'; g.fillRect(0, 0, c.width, c.height);
+  labels.forEach((label, i) => drawTile(g, (i % cols) * tileW, Math.floor(i / cols) * tileH, tileW - 6, tileH - 6, label));
+  return { width: c.width, height: c.height };
+}
+
+// ------------------------------------------------------------------ tests (called from node)
+
+const caption = (m) => `pk ${m.peakDb} rms ${m.rmsDb} dBFS · ${m.centroid} Hz · atk ${m.attackDb} dB`;
+
+const T = {
+  SOUNDS, LOOPS, STATES: Object.keys(STYLES),
+  bpm: Object.fromEntries(Object.entries(STYLES).map(([k, s]) => [k, s.bpm])),
+
+  /** One-shot through the whole chain at default volumes. */
+  async sound(name, opts = {}) {
+    const m = analyze(await render(3.6, (A) => A.play(name, { delay: 0.05, ...opts })));
+    keep(opts.label || name, m, caption(m));
+    return strip(m);
+  },
+
+  async loop(name, opts = { vol: 1, pitch: 1 }) {
+    const out = await render(3, (A) => A.loop(name, true, opts));
+    // steady-state second only (skip the fade-in)
+    const m = analyze({ L: out.L.subarray(SR, 3 * SR), R: out.R.subarray(SR, 3 * SR) });
+    keep(opts.label || `loop:${name}`, m, caption(m));
+    // seam check on the raw loop buffer: the wrap-around step must look like any other step
+    const x = LOOP_DEFS[name].make(createDsp(SR, 1));
+    let typical = 0;
+    for (let i = 1; i < x.length; i++) typical = Math.max(typical, Math.abs(x[i] - x[i - 1]));
+    return { ...strip(m), loopLen: round(x.length / SR, 3), seam: round(Math.abs(x[0] - x[x.length - 1]) / typical, 2) };
+  },
+
+  async music(state, intensity, bars = 16, seed = SEED) {
+    const bpm = STYLES[state].bpm, barDur = 240 / bpm, lead = 0.06, dur = lead + bars * barDur;
+    const out = await render(dur + 0.5, (A) => { A.music(state); A.setIntensity(intensity); A._dev.scheduleMusic(dur); }, { seed });
+    const m = analyze(out), from = Math.round(lead * SR), to = Math.round(dur * SR);
+    const o = onsets(m.mono, from, to);
+    const label = `music:${state}@${intensity}`;
+    const grid = [];
+    for (let b = 0; b <= bars * 4; b++) grid.push([lead + (b * barDur) / 4, b % 4 === 0]);
+    // draw bars 5-8 (after the first phrase, so fills and variations are in view)
+    if (seed === SEED) keep(label, m, `${bpm} bpm · ${caption(m)} · ${round(o.perSec)} onsets/s`, {
+      grid, fullScale: false, viewFrom: Math.round((lead + 4 * barDur) * SR), viewTo: Math.round((lead + 8 * barDur) * SR),
+    });
+    // how different is each 4-bar phrase from the previous one (0 = identical loop)
+    const hopsPerPhrase = Math.round((4 * barDur * SR) / o.hop);
+    let diff = 0, norm = 0;
+    for (let i = hopsPerPhrase; i < o.flux.length; i++) { diff += Math.abs(o.flux[i] - o.flux[i - hopsPerPhrase]); norm += o.flux[i]; }
+    let maxStep = 0;
+    for (let i = from + 1; i < to; i++) maxStep = Math.max(maxStep, Math.abs(m.mono[i] - m.mono[i - 1]));
+    return {
+      ...strip(m), bpm, onsetsPerSec: round(o.perSec, 2), maxSampleStep: round(maxStep, 3), key: out.key,
+      beatPeriodicity: round(periodicity(o.flux, o.hop, 60 / bpm), 2),
+      barPeriodicity: round(periodicity(o.flux, o.hop, barDur), 2),
+      phraseChange: round(diff / (norm || 1), 2),
+      bands: bands(m.mono, from, to),
+    };
+  },
+
+  /** Stapler at its real 600 rpm: is it still a rhythm? Envelope dip between shots, in dB. */
+  async staplerTrain() {
+    const shots = 12, period = 0.1;
+    const out = await render(1.6, (A) => { for (let i = 0; i < shots; i++) A.play('fire_stapler', { delay: 0.05 + i * period }); });
+    const m = analyze(out), win = Math.round(SR * 0.004), dips = [];
+    const level = (at) => { let s = 0; for (let i = 0; i < win; i++) s += m.mono[at + i] ** 2; return Math.sqrt(s / win); };
+    for (let k = 2; k < shots - 1; k++) {
+      const a = Math.round((0.05 + k * period) * SR);
+      let hi = 0, lo = Infinity;
+      for (let i = 0; i < period * SR - win; i += win >> 1) { const v = level(a + i); hi = Math.max(hi, v); lo = Math.min(lo, v); }
+      dips.push(db(hi / lo));
+    }
+    keep('stapler ×10/s', m, `dip between shots ${round(Math.min(...dips))} dB`, { viewFrom: Math.round(0.03 * SR), viewTo: Math.round(0.75 * SR) });
+    return { ...strip(m), minDipDb: round(Math.min(...dips)), meanDipDb: round(dips.reduce((a, b) => a + b) / dips.length) };
+  },
+
+  /**
+   * Everything at once with every slider at maximum: full-intensity combat music, eight staplers at
+   * 600 rpm, punches, markers, blotters, explosions, hits and kills, half of them right next to you.
+   */
+  async worstCase() {
+    const dur = 6;
+    const out = await render(dur, (A) => {
+      A.music('combat'); A.setIntensity(1); A._dev.scheduleMusic(dur);
+      A.setListener([0, 1.6, 0], 0);
+      const rng = makeRng(99), at = (i) => [Math.cos(i * 2.4) * (1 + (i % 5) * 2), 1, Math.sin(i * 2.4) * (1 + (i % 5) * 2)];
+      for (let p = 0; p < 8; p++) {
+        const phase = rng() * 0.1;
+        for (let t = 1 + phase; t < 5; t += 0.1) A.play('fire_stapler', { delay: t, pos: p ? at(p) : undefined });
+      }
+      for (let t = 1; t < 5; t += 0.21) A.play('fire_punch', { delay: t, pos: t % 0.42 < 0.2 ? at(9) : undefined });
+      for (let t = 1.05; t < 5; t += 0.33) A.play('fire_marker', { delay: t, pos: at(3) });
+      for (let t = 1.1; t < 5; t += 0.4) A.play('fire_blotter', { delay: t, pos: at(6) });
+      for (let t = 1.02; t < 5; t += 0.5) A.play('explode', { delay: t, pos: at(1) });
+      for (let t = 1; t < 5; t += 0.07) A.play('impact', { delay: t, pos: at(2) });
+      for (let t = 1; t < 5; t += 0.09) A.play('hit', { delay: t });
+      for (let t = 1.3; t < 5; t += 0.7) { A.play('kill', { delay: t }); A.play('hurt', { delay: t + 0.2 }); }
+      // the literal brief: 12 weapon shots and an explosion in the same 10 ms
+      const names = ['fire_stapler', 'fire_punch', 'fire_marker', 'fire_blotter'];
+      for (let i = 0; i < 12; i++) A.play(names[i % 4], { delay: 3 + i * 0.0008 + (i >> 2) * 0.06, pos: i % 3 ? at(i) : undefined });
+      A.play('explode', { delay: 3.005 });
+    }, { volume: { master: 1, music: 1, sfx: 1 } });
+    const m = analyze(out);
+    let over = 0;
+    for (let i = 0; i < m.mono.length; i++) if (Math.max(Math.abs(out.L[i]), Math.abs(out.R[i])) > 0.62) over++;
+    keep('worst case (all sliders max)', m, `${caption(m)} · ${round((100 * over) / (4 * SR), 2)}% of samples in the soft-clip knee`, { fullScale: true, viewFrom: Math.round(0.8 * SR), viewTo: Math.round(5.2 * SR) });
+    return { ...strip(m), kneePercent: round((100 * over) / (4 * SR), 2) };
+  },
+
+  /** A typical firefight at default sliders, with and without music, to compare sfx vs music level. */
+  async firefight(withMusic = true, withSfx = true) {
+    const dur = 6;
+    const out = await render(dur, (A) => {
+      if (withMusic) { A.music('combat'); A.setIntensity(0.8); A._dev.scheduleMusic(dur); }
+      if (!withSfx) return;
+      A.setListener([0, 1.6, 0], 0);
+      for (let t = 1; t < 5; t += 0.1) A.play('fire_stapler', { delay: t });
+      for (let t = 1.03; t < 5; t += 0.13) A.play('fire_stapler', { delay: t, pos: [9, 1, -14] });
+      for (let t = 1.2; t < 5; t += 0.9) A.play('fire_punch', { delay: t, pos: [-6, 1, -4] });
+      for (let t = 1.5; t < 5; t += 1.3) A.play('explode', { delay: t, pos: [4, 1, -9] });
+      for (let t = 1.1; t < 5; t += 0.3) A.play('hit', { delay: t });
+    });
+    const m = analyze({ L: out.L.subarray(SR, 5 * SR), R: out.R.subarray(SR, 5 * SR) });
+    return strip(m);
+  },
+
+  /** Is the hit tick audible on top of full-intensity music + gunfire? Level in the 3-6.5 kHz slot with/without it. */
+  async hitAudibility() {
+    const dur = 4, hitAt = 2.0;
+    const scene = (hit) => render(dur, (A) => {
+      A.music('combat'); A.setIntensity(1); A._dev.scheduleMusic(dur);
+      for (let t = 1; t < 3; t += 0.1) A.play('fire_stapler', { delay: t });
+      if (hit) A.play('hit', { delay: hitAt });
+    });
+    const slot = (out) => {
+      const a = Math.round((hitAt + 0.004) * SR), mono = new Float32Array(1024);
+      for (let i = 0; i < 1024; i++) mono[i] = (out.L[a + i] + out.R[a + i]) / 2;
+      const [frame] = stft(mono, 1024, 1024, 0, 1024);
+      let e = 0;
+      for (let k = Math.round((3000 * 1024) / SR); k < Math.round((6500 * 1024) / SR); k++) e += frame[k] ** 2;
+      return Math.sqrt(e);
+    };
+    const [withHit, without] = [slot(await scene(true)), slot(await scene(false))];
+    return { hitOverBedDb: round(db(withHit / without)) };
+  },
+
+  /** Compressor make-up calibration: a quiet sine through the master chain must come out at unity. */
+  async calibration() {
+    const ctx = new OfflineAudioContext(2, SR, SR), graph = buildGraph(ctx);
+    const osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.frequency.value = 1000; g.gain.value = 0.01;
+    osc.connect(g).connect(graph.master); osc.start();
+    const out = (await ctx.startRendering()).getChannelData(0);
+    let peak = 0;
+    for (let i = SR / 2; i < SR; i++) peak = Math.max(peak, Math.abs(out[i]));
+    return { lowLevelGainDb: round(db(peak / 0.01), 2) };
+  },
+
+  /** Pan/attenuation sanity: where does a sound end up for a listener at the origin facing -Z? */
+  async spatial() {
+    const probe = async (pos, yaw = 0) => {
+      const out = await render(1.5, (A) => { A.setListener([0, 0, 0], yaw); A.play('fire_punch', { pos, delay: 0.05 }); });
+      const rms = (x) => { let s = 0; for (const v of x) s += v * v; return Math.sqrt(s / x.length); };
+      const m = analyze(out);
+      return { l: rms(out.L), r: rms(out.R), peakDb: m.peakDb, centroid: m.centroid, onset: round(m.start / SR - 0.05, 3) };
+    };
+    const near = await probe([0, 0, -2]), right = await probe([6, 0, 0]), left = await probe([-6, 0, 0]);
+    const far = await probe([0, 0, -40]), behind = await probe([0, 0, 40]), gone = await probe([0, 0, -200]);
+    const turned = await probe([6, 0, 0], -Math.PI / 2); // yaw -90° = turned right: the source is now dead ahead
+    return {
+      rightPanDb: round(db(right.r / right.l)), leftPanDb: round(db(left.r / left.l)), turnedPanDb: round(db(turned.r / turned.l)),
+      nearPeakDb: near.peakDb, at40mPeakDb: far.peakDb, behind40mPeakDb: behind.peakDb, at200mPeakDb: gone.peakDb,
+      nearCentroid: near.centroid, at40mCentroid: far.centroid, behind40mCentroid: behind.centroid, at40mDelay: far.onset,
+    };
+  },
+
+  /** State changes inside one render: look for clicks (sample-to-sample jumps) at the seams. */
+  async transitions() {
+    const dur = 14;
+    const out = await render(dur, async (A, ctx) => {
+      A.music('menu'); A._dev.scheduleMusic(4);
+      const hop = (t, fn) => ctx.suspend(t).then(() => { fn(); ctx.resume(); });
+      hop(4, () => { A.music('combat'); A.setIntensity(1); A._dev.scheduleMusic(8); });
+      hop(8, () => { A.music('draft'); A._dev.scheduleMusic(11); });
+      hop(11, () => { A.music('off'); A._dev.scheduleMusic(14); });
+    });
+    const m = analyze(out);
+    let maxStep = 0;
+    for (let i = 1; i < m.mono.length; i++) maxStep = Math.max(maxStep, Math.abs(m.mono[i] - m.mono[i - 1]));
+    let tail = 0;
+    for (let i = Math.round(13 * SR); i < m.mono.length; i++) tail = Math.max(tail, Math.abs(m.mono[i]));
+    keep('transitions menu→combat→draft→off', m, `largest sample step ${round(maxStep, 3)}`, { viewFrom: 0, viewTo: m.mono.length - 1 });
+    return { ...strip(m), maxSampleStep: round(maxStep, 3), tailAfterOffDb: round(db(tail)) };
+  },
+
+  draw,
+
+  /** The real thing: a live AudioContext, a burst of every sound, loops, all music states. */
+  async live() {
+    const errors = [];
+    addEventListener('error', (e) => errors.push(e.message));
+    const A = createAudio();
+    A.play('hit'); A.loop('wind', true, { vol: 0.5 }); A.music('menu'); A.setVolume({ master: 0.7 }); // before unlock: must be safe
+    A.unlock(); A.unlock();
+    const ctx = A._dev.context;
+    await new Promise((r) => setTimeout(r, 400));
+    const tap = ctx.createAnalyser();
+    tap.fftSize = 2048;
+    A._dev.output.connect(tap);
+    const data = new Float32Array(2048);
+    let peak = 0;
+    const meter = setInterval(() => { tap.getFloatTimeDomainData(data); for (const v of data) peak = Math.max(peak, Math.abs(v)); }, 20);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const seen = [];
+    A.setListener([0, 1.6, 0], 0.4);
+    SOUNDS.forEach((name, i) => A.play(name, i % 2 ? { pos: [Math.sin(i) * 12, 1, Math.cos(i) * 12], pitch: 0.9 + (i % 5) * 0.05, vol: 0.8 } : { delay: i * 0.01 }));
+    A.play('definitely_not_a_sound'); A.loop('nope', true); A.music('polka');
+    const voicesAfterBurst = A._dev.voices;
+    for (const state of ['menu', 'lobby', 'combat', 'draft', 'victory', 'off', 'combat']) {
+      A.music(state); A.setIntensity(Math.random());
+      for (const l of LOOPS) A.loop(l, true, { vol: 0.6, pitch: 0.5 + Math.random() * 1.5 });
+      for (let k = 0; k < 20; k++) { A.play(SOUNDS[Math.floor(Math.random() * SOUNDS.length)], { pos: [k, 0, -k] }); A.loop('charge', true, { pitch: 0.5 + k / 13 }); await sleep(30); }
+      for (const l of LOOPS) A.loop(l, false);
+      await sleep(700);
+      seen.push(A._dev.musicState);
+    }
+    clearInterval(meter);
+    return { state: ctx.state, sampleRate: ctx.sampleRate, currentTime: round(ctx.currentTime, 2), statesSeen: seen, voicesAfterBurst, livePeakDb: round(db(peak)), errors };
+  },
+};
+window.T = T;
+document.title = 'ready';
+</script>
+</body></html>

@@ -1,0 +1,4 @@
+node_modules/
+shots/
+*.zip
+.DS_Store

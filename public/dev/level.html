@@ -1,0 +1,114 @@
+<!doctype html><html><head><meta charset="utf-8"><title>MISPRINT level viewer</title>
+<script type="importmap">{ "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/addons/" } }</script>
+<style>
+  html,body{margin:0;height:100%;background:#1b1a20;overflow:hidden;font:12px/1.3 ui-monospace,Menlo,monospace;color:#1b1a20}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .tag{position:absolute;padding:2px 6px;background:#f1e9d6;border:1px solid #1b1a20;white-space:nowrap}
+  .tag b{font-weight:700}
+</style></head><body><canvas id="c"></canvas>
+<script type="module">
+// Level viewer for shared/mapgen.js — flat tone colours, height shading, no game renderer involved.
+//   ?seed=7&players=4&cam=top|iso|fp[&spawn=0]      one arena
+//   ?sheet=1[&seeds=1,2,3][&from=1][&players=4][&cam=top|iso][&arch=stacks]   contact sheet of 12 arenas
+import * as THREE from 'three';
+import { generateMap } from '/shared/mapgen.js';
+import { THEMES, PLAYER } from '/shared/constants.js';
+
+const q = new URLSearchParams(location.search);
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(innerWidth, innerHeight, false);
+renderer.setScissorTest(true);
+
+function buildScene(map, fullWalls) {
+  const th = THEMES[map.theme], tones = [th.paper, th.a, th.b, th.ink].map((c) => new THREE.Color(c));
+  const pos = [], col = [];
+  const quad = (p, c) => { for (const i of [0, 1, 2, 0, 2, 3]) { pos.push(...p[i]); col.push(c.r, c.g, c.b); } };
+  const box = (min, max, base, lift = 0) => {
+    const [x0, y0, z0] = min, [x1, y1, z1] = max;
+    const shade = (k) => base.clone().multiplyScalar(k);
+    quad([[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]], shade(0.78 + 0.22 * Math.min(1, y1 / 5) + lift));   // top: lighter with height
+    quad([[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]], shade(0.7));
+    quad([[x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0]], shade(0.55));
+    quad([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], shade(0.62));
+    quad([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], shade(0.48));
+    if (y0 > 0.5) quad([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], shade(0.4));
+  };
+  const half = map.size / 2;
+  for (const b of map.boxes) {
+    const rim = b.max[1] > 8;
+    if (b.kind === 'floor') box(b.min, b.max, tones[0].clone().multiplyScalar(0.86));
+    else box(b.min, rim && !fullWalls ? [b.max[0], 0.6, b.max[2]] : b.max, tones[b.tone]);
+  }
+  for (const p of map.jumpPads) box([p.min[0], 0, p.min[2]], [p.max[0], 0.12, p.max[2]], new THREE.Color('#19c98a'), 0.2);
+  for (const p of map.pickups) {
+    const [x, y, z] = p.pos, s = p.type === 'overprint' ? 0.55 : 0.35;
+    box([x - s, y - s, z - s], [x + s, y + s, z + s], new THREE.Color(p.type === 'overprint' ? '#ffd21f' : '#ff4b33'), 0.2);
+  }
+  for (const s of fullWalls ? [] : map.spawns) {      // spawn: a post with a nose pointing along its yaw (hidden in first person)
+    const [x, y, z] = s.pos, dx = -Math.sin(s.yaw), dz = -Math.cos(s.yaw), c = new THREE.Color('#8a5cff');
+    box([x - 0.35, y, z - 0.35], [x + 0.35, y + 1.7, z + 0.35], c);
+    box([x + dx * 0.9 - 0.2, y + 1.2, z + dz * 0.9 - 0.2], [x + dx * 0.9 + 0.2, y + 1.6, z + dz * 0.9 + 0.2], c, 0.2);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(th.sky);
+  scene.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })));
+  return { scene, half };
+}
+
+function camera(map, mode, aspect, spawn) {
+  const half = map.size / 2;
+  if (mode === 'top') {
+    const v = half + 2, cam = new THREE.OrthographicCamera(-v * aspect, v * aspect, v, -v, 1, 200);
+    cam.position.set(0, 100, 0); cam.up.set(0, 0, 1); cam.lookAt(0, 0, 0);   // +z up the screen, like the ASCII views
+    return cam;
+  }
+  if (mode === 'fp') {
+    const s = map.spawns[spawn % map.spawns.length], cam = new THREE.PerspectiveCamera(95, aspect, 0.05, 300);
+    cam.rotation.order = 'YXZ';
+    cam.position.set(s.pos[0], s.pos[1] + PLAYER.eye, s.pos[2]);
+    cam.rotation.set(0, s.yaw, 0);
+    return cam;
+  }
+  const cam = new THREE.PerspectiveCamera(38, aspect, 1, 400);
+  cam.position.set(half * 0.95, half * 1.7, -half * 1.75); cam.lookAt(0, 0, -half * 0.08);
+  return cam;
+}
+
+function tag(html, x, y) {
+  const el = document.createElement('div');
+  el.className = 'tag'; el.innerHTML = html; el.style.left = x + 'px'; el.style.top = y + 'px';
+  document.body.appendChild(el);
+}
+function draw(map, mode, x, y, w, h, spawn = 0) {
+  const { scene } = buildScene(map, mode === 'fp');
+  renderer.setViewport(x, innerHeight - y - h, w, h);
+  renderer.setScissor(x, innerHeight - y - h, w, h);
+  renderer.render(scene, camera(map, mode, w / h, spawn));
+  const walk = map.nav.walk.reduce((a, b) => a + b, 0) / map.nav.walk.length;
+  tag(`<b>${map.name}</b> · ${map.archetype} · seed ${map.seed} · ${map.size} m · ${map.boxes.length} boxes · nav ${(walk * 100) | 0}%${mode === 'fp' ? ` · spawn ${spawn % map.spawns.length}` : ''}`, x + 6, y + 6);
+}
+
+const players = Number(q.get('players') || 4), mode = q.get('cam') || 'top';
+if (q.get('sheet')) {
+  const arch = q.get('arch');
+  let seeds = q.get('seeds') ? q.get('seeds').split(',').map(Number) : null;
+  if (!seeds) {
+    seeds = [];
+    for (let s = Number(q.get('from') || 1); seeds.length < 12; s++) if (!arch || generateMap(s, players).archetype === arch) seeds.push(s);
+  }
+  const cols = 4, rows = Math.ceil(seeds.length / cols), w = Math.floor(innerWidth / cols), h = Math.floor(innerHeight / rows);
+  seeds.forEach((seed, i) => draw(generateMap(seed, players), mode, (i % cols) * w, Math.floor(i / cols) * h, w, h));
+} else if (mode === 'fp' && !q.get('spawn')) {
+  const map = generateMap(Number(q.get('seed') || 7), players), w = innerWidth / 2, h = innerHeight / 2;
+  [0, 1, 2, 3].forEach((i) => draw(map, 'fp', (i % 2) * w, Math.floor(i / 2) * h, w, h, Math.floor(i * map.spawns.length / 4)));   // four spawns around the arena
+} else {
+  const map = generateMap(Number(q.get('seed') || 7), players);
+  draw(map, mode, 0, 0, innerWidth, innerHeight, Number(q.get('spawn') || 0));
+  console.log('map', map.name, map.archetype, 'boxes', map.boxes.length, 'spawns', map.spawns.length, 'pads', map.jumpPads.length);
+}
+</script></body></html>

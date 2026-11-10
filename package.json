@@ -1,0 +1,16 @@
+{
+  "name": "misprint",
+  "version": "1.0.0",
+  "description": "A LAN-hosted browser movement shooter printed on a risograph (badly).",
+  "private": true,
+  "type": "module",
+  "main": "server.js",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tools/servertest-cards.mjs && node tools/servertest-soak.mjs && node tools/servertest.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.22.2"
+  }
+}

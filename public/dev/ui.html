@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MISPRINT UI harness</title>
+<link rel="icon" href="data:,">
+<link rel="preload" href="/fonts/dela-gothic-one-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/css/base.css">
+<link rel="stylesheet" href="/css/menu.css">
+<link rel="stylesheet" href="/css/lobby.css">
+<link rel="stylesheet" href="/css/hud.css">
+<link rel="stylesheet" href="/css/cards.css">
+<link rel="stylesheet" href="/css/pages.css">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #111; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #ui { position: fixed; inset: 0; }
+  #dev { position: fixed; left: 50%; top: 0; transform: translateX(-50%); z-index: 999; font: 12px/1.4 ui-monospace, Menlo, monospace; color: #fff; background: rgba(0, 0, 0, .86); padding: 6px 10px; max-width: 70vw; }
+  #dev[hidden] { display: none; }
+  #dev button, #dev a { font: inherit; color: #ffd21f; background: none; border: 1px solid #ffd21f; margin-right: 6px; padding: 1px 6px; cursor: pointer; text-decoration: none; }
+  #devlog { margin-top: 4px; max-height: 9em; overflow: auto; white-space: pre-wrap; }
+  #index { position: fixed; inset: 0; z-index: 998; overflow: auto; background: #f1e9d6; color: #1b1a20; font: 15px/1.5 ui-monospace, Menlo, monospace; padding: 28px 36px; }
+  #index[hidden] { display: none; }
+  #index h1 { font: 400 32px 'Dela Gothic One', sans-serif; margin: 0 0 6px; }
+  #index h2 { font-size: 14px; margin: 18px 0 4px; text-transform: uppercase; letter-spacing: .08em; }
+  #index a { display: inline-block; color: #1f47c7; margin: 0 14px 4px 0; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui"></div>
+<div id="dev" hidden>
+  <button id="dev-bg">background</button><button id="dev-demo">demo</button><a href="/dev/ui.html">index</a>
+  <span id="dev-info"></span>
+  <div id="devlog"></div>
+</div>
+<div id="index" hidden></div>
+
+<script type="module">
+import { createUI } from '/js/ui/index.js';
+import { CARDS } from '/shared/cards.js';
+import { DEFAULT_SETTINGS } from '/shared/constants.js';
+
+const q = new URLSearchParams(location.search);
+const num = (k, d) => (q.has(k) ? Number(q.get(k)) : d);
+const flag = (k) => q.get(k) === '1';
+const $ = (id) => document.getElementById(id);
+
+// ------------------------------------------------------------------ index of states
+const LINKS = {
+  'Menu': ['screen=menu', 'screen=menu&settings=1', 'screen=connecting', 'screen=error'],
+  'Lobby': ['screen=lobby&players=1', 'screen=lobby&players=4', 'screen=lobby&players=10', 'screen=lobby&players=10&host=0', 'screen=lobby&players=6&chat=1'],
+  'Game HUD': ['screen=game', 'screen=game&demo=1', 'screen=game&bg=dark&demo=1', 'screen=game&hp=22&reload=0.4', 'screen=game&weapon=2&charge=0.7&op=8&slow=1&ghost=1',
+    'screen=game&announce=1&feed=1&chat=1', 'screen=game&count=3', 'screen=game&dead=1', 'screen=game&score=1', 'screen=game&paused=1', 'screen=game&locked=0',
+    'screen=game&typing=1&chat=1', 'screen=game&hit=1&dmg=1&feed=1', 'screen=game&perf=1'],
+  'Between rounds': ['screen=roundEnd', 'screen=roundEnd&players=10&me=0', 'screen=draft', 'screen=draft&picked=1', 'screen=draft&winner=1', 'screen=draft&opts=typo,watermark,ink_burst', 'screen=matchEnd', 'screen=matchEnd&players=10'],
+  'Flow (mock server: menu to lobby to game to draft)': ['flow=1'],
+  'Asset sheet (every icon, glyph, face)': ['screen=sheet'],
+};
+if (!q.has('screen') && !q.has('flow')) {
+  const idx = $('index');
+  idx.hidden = false;
+  idx.innerHTML = '<h1>MISPRINT UI harness</h1><p>Add <b>&amp;dev=1</b> (or press <b>`</b>) for the action log, background toggle and demo switch. <b>&amp;bg=dark|blueprint|hazard</b> swaps the fake arena.</p>'
+    + Object.entries(LINKS).map(([t, ls]) => `<h2>${t}</h2>${ls.map((l) => `<a href="?${l}">${l}</a>`).join('')}`).join('');
+}
+
+// ------------------------------------------------------------------ fake arena (busy, bright, moving)
+const THEMES = {
+  light: { paper: '#f1e9d6', ink: '#1b1a20', a: '#2f6bff', b: '#ff48b0', sky: '#f7d9e6' },
+  blueprint: { paper: '#e8eefc', ink: '#101a3a', a: '#ff8a1f', b: '#2f6bff', sky: '#cfe0ff' },
+  hazard: { paper: '#f3ead0', ink: '#1c1c1c', a: '#ffd21f', b: '#ff4b33', sky: '#ffe0c2' },
+  dark: { paper: '#2a2740', ink: '#0d0c18', a: '#ff48b0', b: '#22c8e8', sky: '#161428' },
+};
+const themeNames = Object.keys(THEMES);
+let themeName = THEMES[q.get('bg')] ? q.get('bg') : 'light';
+const canvas = $('game');
+const g = canvas.getContext('2d');
+
+function drawArena(t) {
+  const th = THEMES[themeName];
+  const W = canvas.width = innerWidth;
+  const H = canvas.height = innerHeight;
+  const sway = Math.sin(t * 0.5) * W * 0.03;
+  const horizon = H * 0.46 + Math.sin(t * 0.8) * H * 0.02;
+  g.fillStyle = th.sky; g.fillRect(0, 0, W, H);
+  // sky halftone
+  g.fillStyle = th.b; g.globalAlpha = 0.35;
+  for (let y = 8; y < horizon; y += 14) for (let x = (y / 14 % 2) * 7; x < W; x += 14) { const r = 4.5 * (1 - y / horizon); g.beginPath(); g.arc(x, y, r, 0, 7); g.fill(); }
+  g.globalAlpha = 1;
+  // floor
+  g.fillStyle = th.paper; g.fillRect(0, horizon, W, H - horizon);
+  g.strokeStyle = th.ink; g.lineWidth = 2; g.globalAlpha = 0.5;
+  for (let i = -14; i <= 14; i++) { g.beginPath(); g.moveTo(W / 2 + sway + i * 40, horizon); g.lineTo(W / 2 + sway * 4 + i * 420, H); g.stroke(); }
+  for (let i = 1; i < 9; i++) { const y = horizon + (H - horizon) * (i * i) / 64; g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+  g.globalAlpha = 1;
+  // blocks
+  const blocks = [[0.08, 0.3, 0.16, th.a], [0.27, 0.18, 0.1, th.paper], [0.4, 0.26, 0.13, th.b], [0.58, 0.12, 0.08, th.a], [0.7, 0.34, 0.2, th.paper], [0.9, 0.22, 0.12, th.b]];
+  blocks.forEach(([x, hgt, w, c], i) => {
+    const bx = x * W + sway * (1 + i * 0.3); const bw = w * W; const bh = hgt * H; const by = horizon + H * 0.05 * (i % 3) - bh;
+    g.fillStyle = c; g.fillRect(bx + 6, by + 5, bw, bh);
+    g.strokeStyle = th.ink; g.lineWidth = 4; g.strokeRect(bx, by, bw, bh);
+    g.fillStyle = th.ink; g.globalAlpha = 0.3;
+    for (let yy = by + bh * 0.5; yy < by + bh - 4; yy += 9) for (let xx = bx + 5; xx < bx + bw - 4; xx += 9) { g.beginPath(); g.arc(xx, yy, 3 * ((yy - by) / bh), 0, 7); g.fill(); }
+    g.globalAlpha = 1;
+    g.fillStyle = th.ink; g.font = `900 ${bh * 0.5}px Impact, sans-serif`; g.globalAlpha = 0.85; g.fillText(String(i + 2), bx + bw * 0.2, by + bh * 0.62); g.globalAlpha = 1;
+  });
+  // ink splats
+  const splats = [[0.2, 0.74, 90, th.b], [0.52, 0.86, 130, th.a], [0.8, 0.7, 70, th.b], [0.36, 0.6, 50, th.a], [0.66, 0.56, 40, th.b], [0.5, 0.5, 60, th.a]];
+  splats.forEach(([x, y, r, c], i) => {
+    g.fillStyle = c; g.beginPath();
+    for (let k = 0; k <= 14; k++) { const a = k / 14 * Math.PI * 2; const rr = r * (0.7 + 0.3 * Math.sin(k * 2.3 + i)); g.lineTo(x * W + sway * 2 + Math.cos(a) * rr * 1.6, y * H + Math.sin(a) * rr * 0.5); }
+    g.fill();
+  });
+  // tracer lines
+  g.strokeStyle = th.ink; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(W * 0.1, H * 0.9); g.lineTo(W * 0.62 + sway, H * 0.4); g.stroke();
+}
+let demoOn = flag('demo');
+function arenaLoop(ms) { drawArena(demoOn ? ms / 1000 : 2); if (demoOn) requestAnimationFrame(arenaLoop); }
+requestAnimationFrame(arenaLoop);
+addEventListener('resize', () => { if (!demoOn) drawArena(2); });
+
+// ------------------------------------------------------------------ mock world
+const NAMES = ['SMUDGE', 'TONERBOY', 'PAPERCUT', 'CMYKATE', 'Gutterball99', 'serif', 'INKY', 'KERNING MAN', 'Bleeder', 'JAMMED'];
+const cardIds = CARDS.map((c) => c.id);
+function makePlayers(n, selfIndex, hostIndex) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const cards = [];
+    for (let k = 0; k < (i * 3 + 2) % 6; k++) cards.push(cardIds[(i * 7 + k * 5) % cardIds.length]);
+    if (i === 1) cards.push(cards[0] || 'overprint');
+    out.push({
+      id: i + 1, name: NAMES[i], color: (i + (q.has('color') ? num('color', 0) : 0)) % 10, face: i % 8, isBot: i >= Math.max(2, n - 3) && i !== selfIndex && i !== hostIndex,
+      wins: [1, 2, 0, 1, 0, 0, 2, 0, 0, 0][i], kills: [5, 7, 3, 6, 1, 4, 2, 0, 3, 1][i], deaths: [3, 2, 6, 4, 7, 5, 5, 8, 2, 6][i],
+      ping: 8 + i * 9, cards,
+    });
+  }
+  return out;
+}
+const nPlayers = Math.min(10, Math.max(1, num('players', 6)));
+const selfIndex = Math.min(nPlayers - 1, num('me', 0));
+const amHost = q.get('host') !== '0';
+const hostIndex = amHost ? selfIndex : (selfIndex + 1) % nPlayers;
+const world = {
+  selfId: selfIndex + 1,
+  hostId: hostIndex + 1,
+  joinUrls: q.has('url') ? q.get('url').split(',') : ['http://192.168.1.23:3000', 'http://10.0.0.5:3000'],
+  settings: { ...DEFAULT_SETTINGS },
+  players: makePlayers(nPlayers, selfIndex, hostIndex),
+  phase: 'lobby',
+};
+const self = () => world.players.find((p) => p.id === world.selfId);
+
+// ------------------------------------------------------------------ mock actions + audio (logged)
+const logEl = $('devlog');
+const calls = [];
+function log(kind, name, args) {
+  const line = `${kind}.${name}(${args.map((a) => JSON.stringify(a)).join(', ')})`;
+  calls.push(line);
+  if (kind === 'actions') console.log(line);
+  logEl.textContent = calls.slice(-8).join('\n');
+  logEl.scrollTop = 1e6;
+}
+const audio = { play: (name, opts) => log('audio', 'play', opts ? [name, opts] : [name]) };
+
+let ui;
+const pushLobby = () => ui.setLobby({ ...world, players: world.players.map((p) => ({ ...p })) });
+const flow = { timers: [], after(ms, fn) { this.timers.push(setTimeout(fn, ms)); } };
+
+function draftState(over = {}) {
+  const opts = q.has('opts') ? q.get('opts').split(',') : ['hot_press', 'bleed', 'second_draft'];
+  return {
+    options: opts, endsAt: Date.now() + num('left', 13) * 1000, picked: null, isWinner: false,
+    others: world.players.filter((p) => p.id !== world.selfId).map((p, i) => ({ id: p.id, name: p.name, color: p.color, picked: i % 3 === 0 ? cardIds[(i * 5 + 3) % cardIds.length] : null })),
+    ...over,
+  };
+}
+const standings = () => world.players.map((p) => ({ id: p.id, kills: p.kills, deaths: p.deaths, wins: p.wins }));
+const topId = () => [...world.players].sort((a, b) => b.kills - a.kills)[0].id;
+
+function hudState(over = {}) {
+  const me = self();
+  return {
+    alive: !flag('dead'), hp: num('hp', 100), maxHp: num('maxhp', 100), weapon: num('weapon', 0), ammo: num('ammo', 19), mag: num('mag', 28),
+    reload: q.has('reload') ? num('reload', 0) : null, charge: num('charge', 0),
+    dash: { charges: num('dash', 1), max: num('dashmax', 2), frac: 0.45 }, rewind: num('rewind', 0.62),
+    overprint: num('op', 0), speed: num('speed', 9.4), spread: num('spread', 0.02),
+    timeLeft: num('time', 107), round: 2, kills: me.kills, killsToWin: world.settings.killsToWin,
+    leader: { name: 'TONERBOY', kills: 7, color: 1 },
+    respawnIn: flag('dead') ? 1.8 : 0, killerName: flag('dead') ? (q.get('killer') ?? 'TONERBOY') : null,
+    slowed: flag('slow'), ghost: flag('ghost'), cards: me.cards,
+    ...over,
+  };
+}
+
+const actions = {
+  join(p) { log('actions', 'join', [p]); Object.assign(self(), p); ui.setScreen('connecting'); flow.after(500, () => { pushLobby(); ui.setScreen('lobby'); }); },
+  setProfile(p) { log('actions', 'setProfile', [p]); Object.assign(self(), p); pushLobby(); },
+  setMatchSettings(s) { log('actions', 'setMatchSettings', [s]); Object.assign(world.settings, s); pushLobby(); },
+  start() {
+    log('actions', 'start', []);
+    ui.setScreen('game'); ui.setPointerLocked(true); startHudLoop();
+    [3, 2, 1, 0].forEach((n, i) => flow.after(i * 500, () => ui.countdown(n, 'NEWSPRINT')));
+    flow.after(3200, () => { stopHudLoop(); ui.setScreen('roundEnd', { round: 1, winnerId: topId(), standings: standings(), nextIn: 2 }); });
+    flow.after(5400, () => { ui.setDraft(draftState({ endsAt: Date.now() + 16000 })); ui.setScreen('draft'); });
+  },
+  pickCard(id) {
+    log('actions', 'pickCard', [id]);
+    self().cards.push(id); pushLobby();
+    const d = draftState({ picked: id });
+    ui.setDraft(d);
+    d.others.forEach((o, i) => flow.after(500 + i * 450, () => { o.picked = o.picked || cardIds[(i * 3 + 1) % cardIds.length]; ui.setDraft({ ...d, others: d.others.map((x) => ({ ...x })) }); }));
+  },
+  chat(text) { log('actions', 'chat', [text]); ui.chat({ fromName: self().name, color: self().color, text }); },
+  setOption(k, v) { log('actions', 'setOption', [k, v]); },
+  resume() { log('actions', 'resume', []); ui.setPaused(false); ui.setPointerLocked(true); },
+  backToMenu() { log('actions', 'backToMenu', []); ui.setScreen('menu'); },
+};
+
+ui = createUI({ root: $('ui'), actions, audio });
+window.ui = ui; window.world = world; window.calls = calls; window.hudState = hudState;
+ui.setOptions({ sensitivity: 1, fov: 100, master: 0.8, music: 0.5, sfx: 0.9, quality: 1, invertY: false });
+pushLobby();
+
+// ------------------------------------------------------------------ HUD loop (static or demo)
+let hudRaf = 0;
+let hud = hudState();
+function startHudLoop() {
+  const t0 = performance.now();
+  let nextEvent = 600;
+  const step = (ms) => {
+    hudRaf = requestAnimationFrame(step);
+    if (!demoOn) { ui.setHud(hud); return; }
+    const t = (ms - t0) / 1000;
+    const cyc = t % 16;
+    const dead = cyc > 13;
+    const w = Math.floor(t / 5) % 4;
+    const mags = [28, 4, 3, 2];
+    const shot = (t * [10, 1.2, 0.9, 1][w]) % (mags[w] + 3);
+    const reloading = shot > mags[w];
+    hud = hudState({
+      alive: !dead, hp: dead ? 0 : Math.max(4, 100 - ((t * 9) % 110)), weapon: w, mag: mags[w], ammo: reloading ? 0 : mags[w] - Math.floor(shot),
+      reload: reloading ? (shot - mags[w]) / 3 : null, charge: w === 2 ? (t * 0.9) % 1 : 0,
+      dash: { charges: Math.floor((t / 2.5) % 3), max: 2, frac: (t / 2.5) % 1 }, rewind: Math.min(1, (t % 9) / 6),
+      overprint: Math.max(0, 10 - (t % 22)), speed: 8.2 + Math.sin(t * 1.7) * 6 + (Math.sin(t * 0.4) > 0.6 ? 9 : 0), spread: 0.012 + 0.03 * Math.abs(Math.sin(t * 3)),
+      timeLeft: Math.max(0, 28 - t), respawnIn: dead ? 16 - cyc : 0, killerName: dead ? 'TONERBOY' : null, slowed: cyc > 6 && cyc < 8, ghost: cyc > 9 && cyc < 11,
+    });
+    ui.setHud(hud);
+    if ((ms - t0) > nextEvent) {
+      nextEvent += 450 + Math.random() * 500;
+      const r = Math.random();
+      const a = world.players[Math.floor(Math.random() * world.players.length)];
+      const b = world.players[Math.floor(Math.random() * world.players.length)];
+      if (r < 0.4) ui.hitmarker({ dmg: 8 + Math.random() * 40, headshot: Math.random() < 0.3, kill: Math.random() < 0.2 });
+      else if (r < 0.6) ui.damageFrom((Math.random() - 0.5) * Math.PI * 2, 10 + Math.random() * 40);
+      else if (r < 0.8) ui.killfeed({ killerId: a.id, killerName: a.name, killerColor: a.color, victimId: b.id, victimName: b.name, victimColor: b.color, weapon: Math.floor(Math.random() * 5) - 1, headshot: Math.random() < 0.3, self: a.id === world.selfId || b.id === world.selfId });
+      else if (r < 0.9) { const s = ['kill', 'streak', 'round', 'info', 'warn'][Math.floor(Math.random() * 5)]; ui.announce(...ANN[s], s); }
+      else ui.chat({ fromName: a.name, color: a.color, text: ['gg', 'who has watermark??', 'nice punch-jump', 'reprint incoming'][Math.floor(Math.random() * 4)] });
+    }
+  };
+  cancelAnimationFrame(hudRaf);
+  hudRaf = requestAnimationFrame(step);
+}
+function stopHudLoop() { cancelAnimationFrame(hudRaf); }
+
+const ANN = {
+  kill: ['STAPLED TONERBOY', 'Headshot, +1'],
+  streak: ['PRINT RUN ×3', 'Three in a row'],
+  round: ['LAST KILL WINS', 'TONERBOY is one kill from the round'],
+  info: ['OVERPRINT IS BACK', 'Centre dais'],
+  warn: ['OUT OF INK', 'Reload with R'],
+};
+const feedRow = (ki, vi, weapon, headshot, isSelf) => {
+  const a = world.players[ki % world.players.length];
+  const b = world.players[vi % world.players.length];
+  return { killerId: a.id, killerName: a.name, killerColor: a.color, victimId: b.id, victimName: b.name, victimColor: b.color, weapon, headshot, self: isSelf };
+};
+function seedChat() {
+  const p = world.players;
+  ui.chat({ system: true, text: `${p[p.length - 1].name} joined the press room` });
+  ui.chat({ fromName: p[1 % p.length].name, color: p[1 % p.length].color, text: 'who put a hole punch on the roof' });
+  ui.chat({ fromName: p[0].name, color: p[0].color, text: 'me. it is called a punch-jump' });
+  ui.chat({ fromName: p[2 % p.length].name, color: p[2 % p.length].color, text: 'reprint the map, I got stuck in the gutter' });
+}
+
+// ------------------------------------------------------------------ show the requested state
+const scr = q.get('screen');
+if (q.has('flow')) ui.setScreen('menu');
+if (scr === 'menu') { ui.setScreen('menu'); if (flag('settings')) document.querySelector('.menu-top .btn').click(); }
+if (scr === 'connecting') ui.setScreen('connecting');
+if (scr === 'error') ui.setScreen('error', { message: q.get('msg') || 'Server is full (10/10 print-heads).' });
+if (scr === 'lobby') { if (flag('chat')) seedChat(); ui.setScreen('lobby'); }
+if (scr === 'roundEnd') ui.setScreen('roundEnd', { round: 2, winnerId: q.has('winnerId') ? num('winnerId', 1) : topId(), standings: standings(), nextIn: num('next', 6) });
+if (scr === 'matchEnd') ui.setScreen('matchEnd', { winnerId: q.has('winnerId') ? num('winnerId', 1) : 2, standings: standings() });
+if (scr === 'draft') {
+  ui.setScreen('draft');
+  const d = flag('winner') ? draftState({ options: [], isWinner: true }) : draftState();
+  ui.setDraft(d);
+  if (flag('picked')) setTimeout(() => ui.setDraft({ ...d, picked: d.options[1] }), 1500);
+}
+if (scr === 'game') {
+  ui.setScreen('game');
+  ui.setScores(world.players);
+  ui.setPointerLocked(q.get('locked') !== '0');
+  startHudLoop();
+  if (flag('chat')) seedChat();
+  if (flag('feed')) { ui.killfeed(feedRow(1, 2, 0, false, false)); ui.killfeed(feedRow(0, 3, 2, true, true)); ui.killfeed(feedRow(4, 4, -1, false, false)); ui.killfeed(feedRow(3, 0, 1, false, true)); ui.killfeed(feedRow(5, 1, 3, false, false)); }
+  if (q.has('announce')) { const a = q.get('announce'); if (ANN[a]) ui.announce(...ANN[a], a); else Object.keys(ANN).forEach((k) => ui.announce(...ANN[k], k)); }
+  if (q.has('count')) ui.countdown(num('count', 3), 'NEWSPRINT');
+  if (flag('score')) ui.showScoreboard(true);
+  if (flag('paused')) ui.setPaused(true);
+  if (flag('typing')) setTimeout(() => ui.openChat(), 300);
+  if (flag('hit')) setInterval(() => { ui.hitmarker({ dmg: 34, headshot: true, kill: false }); ui.hitmarker({ dmg: 14, headshot: false, kill: true }); }, 700);
+  if (flag('dmg')) setInterval(() => { ui.damageFrom(1.2, 35); ui.damageFrom(-2.4, 12); }, 700);
+  if (flag('perf')) setTimeout(runPerf, 1200);
+}
+
+if (scr === 'sheet') {
+  const [{ cardIcon, weaponGlyph, pict }, { badgeSvg, botSvg }, { FACES, INKS }] = await Promise.all([import('/js/ui/icons.js'), import('/js/ui/faces.js'), import('/shared/constants.js')]);
+  const el = document.createElement('div');
+  el.className = 'scr scr-paper';
+  el.style.cssText = 'overflow:auto;padding:1.5rem 2rem;display:flex;flex-wrap:wrap;gap:1rem 1.2rem;align-content:flex-start;pointer-events:auto';
+  const cell = (label, html, w) => `<div style="width:${w}rem;text-align:center"><div style="height:${w * 0.8}rem;display:grid;place-items:center">${html}</div><span class="label">${label}</span></div>`;
+  el.innerHTML = CARDS.map((c) => cell(c.icon, cardIcon(c.icon).replace('class="ic"', `class="ic" style="width:3.4rem;height:3.4rem;--spot:${['var(--pink)', 'var(--blue)', 'var(--yellow)'][c.rarity]}"`), 4.6)).join('')
+    + [0, 1, 2, 3, -1].map((w) => cell(`weapon ${w}`, weaponGlyph(w).replace('class="', 'style="width:6rem;height:3rem" class="'), 7)).join('')
+    + ['gear', 'copy', 'check', 'cross', 'arrow', 'crown', 'headshot', 'skull', 'chat', 'bolt', 'mouse', 'ping'].map((n) => cell(n, pict(n).replace('class="', 'style="width:2rem;height:2rem" class="'), 3.4)).join('')
+    + FACES.map((f, i) => cell(f, `<span style="--c:${INKS[i].hex}">${badgeSvg(f).replace('class="', 'style="width:4rem;height:4rem" class="')}</span>`, 5)).join('')
+    + FACES.slice(0, 4).map((f, i) => cell(f, `<span style="--c:${INKS[i + 4].hex};width:5rem;display:block">${botSvg(f)}</span>`, 7)).join('');
+  $('ui').appendChild(el);
+}
+
+// ------------------------------------------------------------------ perf: unchanged setHud must not touch the DOM
+function runPerf() {
+  stopHudLoop();
+  const fixed = hudState();
+  for (let i = 0; i < 10; i++) ui.setHud(fixed);            // settle (throttled readouts)
+  let records = 0;
+  const mo = new MutationObserver((list) => { records += list.length; });
+  mo.observe($('ui'), { subtree: true, childList: true, attributes: true, characterData: true });
+  const t0 = performance.now();
+  for (let i = 0; i < 6000; i++) ui.setHud(fixed);          // 100 s of frames, synchronously
+  const syncMs = performance.now() - t0;
+  let frames = 0;
+  const tick = () => {
+    ui.setHud(fixed);
+    if (++frames < 120) { requestAnimationFrame(tick); return; }
+    records += mo.takeRecords().length;
+    mo.disconnect();
+    const msg = `PERF unchanged setHud: ${records} DOM mutations over 6000 sync calls + 120 rAF frames; ${(syncMs / 6000 * 1000).toFixed(2)} us per call`;
+    console.log(msg);
+    window.perfResult = { records, usPerCall: syncMs / 6000 * 1000 };
+    $('dev').hidden = false; $('dev-info').textContent = msg;
+  };
+  requestAnimationFrame(tick);
+}
+
+// ------------------------------------------------------------------ dev panel
+if (flag('dev')) $('dev').hidden = false;
+addEventListener('keydown', (e) => { if (e.key === '`') $('dev').hidden = !$('dev').hidden; });
+$('dev-bg').onclick = () => { themeName = themeNames[(themeNames.indexOf(themeName) + 1) % themeNames.length]; drawArena(2); };
+$('dev-demo').onclick = () => { demoOn = !demoOn; if (demoOn) requestAnimationFrame(arenaLoop); };
+</script>
+</body>
+</html>

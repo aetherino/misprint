@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>MISPRINT — soundboard</title>
+<style>
+  body { margin: 0; padding: 16px 20px 40px; background: #f1e9d6; color: #1b1a20; font: 13px/1.4 ui-monospace, Menlo, monospace; }
+  h1 { font-size: 18px; margin: 0 0 4px; } h2 { font-size: 12px; margin: 18px 0 6px; text-transform: uppercase; letter-spacing: .08em; border-bottom: 2px solid #1b1a20; }
+  button { font: inherit; background: #fbf6ea; color: inherit; border: 1.5px solid #1b1a20; padding: 5px 9px; margin: 0 5px 5px 0; cursor: pointer; }
+  button:hover { background: #ffd21f; } button.on { background: #ff48b0; }
+  label { margin-right: 14px; white-space: nowrap; } input[type=range] { vertical-align: middle; width: 140px; }
+  #meter { height: 10px; width: 320px; border: 1.5px solid #1b1a20; background: #fbf6ea; } #bar { height: 100%; width: 0; background: #2f6bff; }
+  .row { margin-bottom: 6px; }
+</style></head>
+<body>
+<h1>MISPRINT soundboard</h1>
+<div class="row">Click anything to unlock audio. Each click picks a random variation + pitch jitter. <span id="status"></span></div>
+<div id="meter"><div id="bar"></div></div>
+<h2>Mix</h2>
+<div class="row" id="mix"></div>
+<h2>Music</h2>
+<div class="row" id="music"></div>
+<div class="row"><label>intensity <input type="range" id="intensity" min="0" max="1" step="0.01" value="0.5"> <span id="iv">0.50</span></label>
+  <button id="fight">firefight (4 s stress)</button></div>
+<h2>Loops</h2>
+<div class="row" id="loops"></div>
+<div class="row"><label>loop pitch <input type="range" id="lp" min="0.5" max="2" step="0.01" value="1"></label>
+  <label>loop vol <input type="range" id="lv" min="0" max="1" step="0.01" value="1"></label></div>
+<h2>One-shots <label style="font-weight:normal;text-transform:none"><input type="checkbox" id="spatial"> positional (random spot within 25 m)</label></h2>
+<div id="sounds"></div>
+<script type="module">
+import { createAudio, SOUNDS, LOOPS } from '/js/audio/index.js';
+const A = createAudio(), $ = (id) => document.getElementById(id);
+const button = (parent, text, fn) => { const b = document.createElement('button'); b.textContent = text; b.onclick = () => { A.unlock(); fn(b); }; parent.append(b); return b; };
+const randomPos = () => { const a = Math.random() * 6.283, d = 2 + Math.random() * 23; return [Math.cos(a) * d, 1, Math.sin(a) * d]; };
+
+const volume = { master: 0.8, music: 0.6, sfx: 0.8 };
+for (const k of Object.keys(volume)) {
+  const l = document.createElement('label');
+  l.innerHTML = `${k} <input type="range" min="0" max="1" step="0.01" value="${volume[k]}">`;
+  l.firstElementChild.oninput = (e) => { volume[k] = +e.target.value; A.setVolume(volume); };
+  $('mix').append(l);
+}
+for (const state of ['menu', 'lobby', 'combat', 'draft', 'victory', 'off']) {
+  button($('music'), state, (b) => { A.music(state); for (const o of $('music').children) o.classList.toggle('on', o === b); });
+}
+$('intensity').oninput = (e) => { A.setIntensity(+e.target.value); $('iv').textContent = (+e.target.value).toFixed(2); };
+
+const loopOpts = () => ({ pitch: +$('lp').value, vol: +$('lv').value }), loopOn = new Set();
+for (const name of LOOPS) button($('loops'), name, (b) => { loopOn.has(name) ? loopOn.delete(name) : loopOn.add(name); b.classList.toggle('on', loopOn.has(name)); A.loop(name, loopOn.has(name), loopOpts()); });
+$('lp').oninput = $('lv').oninput = () => { for (const name of loopOn) A.loop(name, true, loopOpts()); };
+
+for (const name of SOUNDS) button($('sounds'), name, () => A.play(name, $('spatial').checked ? { pos: randomPos() } : undefined));
+
+button($('fight').parentNode, '', () => {}).remove();
+$('fight').onclick = () => {
+  A.unlock(); A.music('combat'); A.setIntensity(1);
+  for (let p = 0; p < 8; p++) for (let t = Math.random() * 0.1; t < 4; t += 0.1) A.play('fire_stapler', { delay: t, pos: p ? randomPos() : undefined });
+  for (let t = 0; t < 4; t += 0.45) { A.play('fire_punch', { delay: t, pos: randomPos() }); A.play('explode', { delay: t + 0.2, pos: randomPos() }); A.play('fire_marker', { delay: t + 0.3, pos: randomPos() }); }
+  for (let t = 0; t < 4; t += 0.16) { A.play('hit', { delay: t }); A.play('impact', { delay: t, pos: randomPos() }); }
+  A.play('kill', { delay: 2 }); A.play('hurt', { delay: 1 });
+};
+
+let tap = null; const data = new Float32Array(1024);
+setInterval(() => {
+  const ctx = A._dev.context;
+  if (!ctx) return;
+  if (!tap && A._dev.output) { tap = ctx.createAnalyser(); tap.fftSize = 1024; A._dev.output.connect(tap); }
+  let peak = 0;
+  if (tap) { tap.getFloatTimeDomainData(data); for (const v of data) peak = Math.max(peak, Math.abs(v)); }
+  $('bar').style.width = Math.min(100, peak * 100) + '%';
+  $('status').textContent = `[${ctx.state} · ${ctx.sampleRate} Hz · ${A._dev.voices} voices · music ${A._dev.musicState}]`;
+}, 50);
+</script>
+</body></html>

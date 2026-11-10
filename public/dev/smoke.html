@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script type="importmap">{ "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/addons/" } }</script>
+<style>html,body{margin:0;height:100%}canvas{width:100%;height:100%;display:block}</style></head><body><canvas id="game"></canvas>
+<script type="module">
+import { createRenderer } from '/js/render/index.js';
+import { generateMap } from '/shared/mapgen.js';
+const seed = Number(new URLSearchParams(location.search).get('seed') || 7);
+const R = await createRenderer({ canvas: document.getElementById('game') });
+const map = generateMap(seed, 4);
+R.buildWorld(map);
+R.resize(innerWidth, innerHeight);
+R.camera.position.set(0, 55, 38); R.camera.rotation.set(-1.0, 0, 0);
+R.render(0.016, 0);
+console.log('map', map.name, 'boxes', map.boxes.length, 'spawns', map.spawns.length);
+</script></body></html>

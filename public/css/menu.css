@@ -1,0 +1,110 @@
+/* Menu = the zine cover, plus the two small full-page states (connecting, error). */
+
+.menu { overflow: hidden; }
+
+.menu-halftone {
+  position: absolute; left: -4rem; bottom: -6rem; width: 46rem; height: 30rem;
+  --dot: var(--pink); --dot-size: .7rem; opacity: .5;
+  -webkit-mask: radial-gradient(closest-side, #000 20%, transparent 100%); mask: radial-gradient(closest-side, #000 20%, transparent 100%);
+  pointer-events: none;
+}
+.menu-reg-a { left: 50%; top: .55rem; }
+.menu-reg-b { right: .55rem; top: 50%; }
+
+.menu-top {
+  position: absolute; left: 3.4rem; right: 3.4rem; top: 1.5rem; height: 2.2rem;
+  display: flex; align-items: center; gap: 1.2rem;
+}
+.menu-top .label:first-child { background: var(--ink); color: var(--paper); padding: .3em .55em .22em; }
+.menu-top-gap { flex: 1; }
+.menu-top .barcode { height: 1.9rem; width: 6rem; }
+
+/* ----- the logo: blue plate, pink plate (multiplied) and a black keyline, none of them aligned ----- */
+.menu-logo { position: absolute; left: 3rem; top: 4.3rem; transform: rotate(-2.2deg); transform-origin: 0 100%; }
+.logo { font-size: 10.7rem; line-height: 1; white-space: nowrap; letter-spacing: -.035em; margin: 0; }
+.logo-l { position: relative; display: inline-block; color: var(--blue); }
+.logo-l::before, .logo-l::after { content: attr(data-c); position: absolute; left: 0; top: 0; }
+.logo-l::before { color: var(--pink); mix-blend-mode: multiply; transform: translate(.05em, -.035em); }
+.logo-l::after { color: transparent; -webkit-text-stroke: .016em var(--ink); transform: translate(.022em, -.012em); }
+.logo-l2 { transform: scaleX(-1); }
+.logo-l2::before { transform: translate(.075em, -.02em); }
+.logo-l5::before { transform: translate(.03em, -.06em); }
+.logo-l7 { transform: translate(.02em, .085em) rotate(5deg); }
+.logo-l7::before { transform: translate(.085em, -.05em); }
+
+.menu-sic-ring {
+  position: absolute; left: 13.1rem; top: .2rem; width: 8.6rem; height: 11.2rem;
+  fill: none; stroke: var(--red); stroke-width: 2.2; stroke-linecap: round; overflow: visible; pointer-events: none;
+}
+.menu-sic { position: absolute; left: 21.6rem; top: 0rem; font-size: 1.6rem; color: var(--red); transform: rotate(8deg); }
+.menu-fix { position: absolute; right: 1rem; top: 11.9rem; font-size: 1.25rem; color: var(--blue-deep); transform: rotate(4deg); white-space: nowrap; }
+.scribble-arrow { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.menu-fix .scribble-arrow { position: absolute; right: -1.6rem; top: -2.4rem; width: 3rem; height: 2rem; transform: rotate(-52deg); }
+
+.menu-pitch { position: absolute; left: 3.5rem; top: calc(50% - 3.9rem); width: 22rem; }
+.menu-tag { font-size: 1.75rem; line-height: 1.08; text-transform: none; letter-spacing: -.01em; }
+.menu-badly { position: absolute; left: 14.6rem; top: 3.55rem; font-size: 1.5rem; color: var(--blue-deep); transform: rotate(-6deg); }
+.menu-lines { margin-top: 2.3rem; display: grid; gap: .55rem; font-size: var(--t-4); line-height: 1.2; }
+.menu-lines li { padding-left: 1.1rem; position: relative; }
+.menu-lines li::before { content: ''; position: absolute; left: 0; top: .38em; width: .5rem; height: .5rem; background: var(--pink); box-shadow: .125rem .125rem 0 var(--ink); }
+.menu-lines b { font-weight: 700; }
+
+.menu-hero { position: absolute; left: 27rem; top: calc(50% - 5.2rem); width: 19rem; height: 20rem; }
+.menu-sun {
+  position: absolute; left: .6rem; top: 1.6rem; width: 17.5rem; height: 17.5rem; border-radius: 50%;
+  background-color: var(--yellow); --dot: var(--ink); --dot-size: .56rem;
+  background-image: radial-gradient(circle at center, rgba(27, 26, 32, .28) 30%, transparent 33%);
+  border: var(--line) solid var(--ink);
+  box-shadow: .5rem .4rem 0 var(--blue);
+}
+.menu-bot { position: absolute; left: 3.9rem; top: 1.2rem; width: 11.6rem; transform: rotate(-4deg); animation: bot-bob 3.2s steps(2, jump-none) infinite; }
+.bot { width: 100%; height: auto; overflow: visible; }
+.bot-fill { fill: var(--c, var(--pink)); }
+.bot-paper { fill: var(--white); }
+.bot-line { fill: none; stroke: var(--ink); stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; }
+@keyframes bot-bob { 50% { transform: rotate(-2deg) translateY(-.3rem); } }
+.menu-you { position: absolute; left: -.4rem; top: .2rem; font-size: 1.6rem; color: var(--blue-deep); transform: rotate(-10deg); }
+.menu-you .scribble-arrow { position: absolute; left: 2.7rem; top: .9rem; width: 2.8rem; height: 1.9rem; transform: rotate(38deg); }
+
+/* ----- press pass ----- */
+.pass {
+  position: absolute; right: 3.6rem; top: calc(50% - 4.9rem); width: 28rem;
+  padding: 1rem 1.4rem 1.3rem; display: grid; gap: .7rem;
+  transform: rotate(1.3deg);
+  box-shadow: .5rem .5rem 0 var(--ink);
+}
+.pass-head { display: flex; align-items: baseline; justify-content: space-between; border-bottom: var(--line) dashed var(--ink); padding-bottom: .55rem; }
+.pass-head h2 { font-size: 1.5rem; }
+.pass-no { font-size: var(--t-1); color: var(--ink-2); }
+.pass-row { display: grid; grid-template-columns: 2.9rem 1fr; align-items: center; gap: .6rem; }
+.pass .swatch { width: 1.75rem; height: 1.75rem; }
+.pass .swatches { gap: .32rem; flex-wrap: nowrap; }
+.pass .facepick { gap: .3rem; flex-wrap: nowrap; }
+.pass .faceopt { width: 2.3rem; }
+.menu-play { margin-top: .2rem; padding: .3em .8em .18em; font-size: 2.2rem; justify-content: space-between; box-shadow: .375rem .375rem 0 var(--ink); }
+.menu-play .display { letter-spacing: .02em; line-height: 1.15; }
+.menu-play .kbd { font-size: var(--t-2); }
+
+/* ----- how to play ----- */
+.howto {
+  position: absolute; left: 3.5rem; right: 3.6rem; bottom: 2.5rem; height: 4rem;
+  display: flex; align-items: stretch; background-color: var(--white);
+}
+.howto-title { display: flex; align-items: center; padding: 0 .9rem; background: var(--ink); color: var(--paper); font-size: var(--t-3); width: 5.4rem; line-height: 1.05; }
+.howto-keys { flex: 1; display: flex; align-items: center; justify-content: space-between; padding: 0 1rem; gap: .5rem; }
+.howto-keys li { display: grid; justify-items: center; gap: .3rem; }
+.howto-k { display: flex; gap: .15rem; align-items: center; }
+.howto-w { font-weight: 700; font-size: var(--t-1); letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+
+.menu-foot { position: absolute; left: 3.5rem; right: 3.6rem; bottom: .8rem; display: flex; align-items: center; gap: 1rem; font-size: var(--t-1); color: var(--ink-2); }
+.menu-foot .colorbar i { width: .8rem; height: .8rem; }
+
+/* ----- connecting + error ----- */
+.wait { display: grid; place-content: center; justify-items: center; gap: 1.4rem; text-align: center; }
+.wait-reg { width: 7rem; height: 7rem; animation: spin 2.4s steps(12) infinite; stroke-width: 1.1; }
+.wait h1 { font-size: 4rem; }
+.wait p { font-size: var(--t-4); max-width: 34rem; }
+.wait-msg { font-family: var(--f-mono); background: var(--white); border: var(--line) solid var(--ink); padding: .7rem 1rem; user-select: text; -webkit-user-select: text; }
+.wait .stamp { font-size: 1.4rem; }
+.err-title { position: relative; }
+.err-title .stamp { position: absolute; right: -5rem; top: -1.6rem; --stamp: var(--red); transform: rotate(9deg); }
