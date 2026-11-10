@@ -17,7 +17,7 @@
 You need [Node.js](https://nodejs.org) 18 or newer.
 
 ```sh
-git clone https://github.com/<you>/misprint.git
+git clone https://github.com/aetherino/misprint.git
 cd misprint
 npm install
 npm start
